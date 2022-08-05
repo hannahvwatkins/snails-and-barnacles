@@ -11,7 +11,7 @@ options(mc.cores = parallel::detectCores())
 #load in data-------------------------------------------------------------------
 snail_transects_full <- read_csv("data/Snail_Data_Transects.csv") %>%
   #create a unique quad id
-  unite("quadrat", c(Transect,distance_from_water), remove = FALSE) 
+  unite("quadrat", c(Transect,distance_from_marsh), remove = FALSE) 
 
 snail_quad_level <- snail_transects_full %>%
   #only include one line per quadrat, where the total counts are included 
@@ -55,12 +55,21 @@ snail_movement <- read_csv("data/Snail Data - Behavioural_observations.csv") %>%
   filter(trematodes == "no") %>% 
   mutate(wgt_ratio = wet_wgt_barnacles/wet_wgt_snail,
          scale_length = scale(length),
+         #make sure there are zeros instead of NAs for the no barnacles
          wet_wgt_barnacles = case_when(barnacled == "no" ~ 0,
                                        TRUE ~ wet_wgt_barnacles),
-         scale_wgt_barnacles = scale(wet_wgt_barnacles),
          wgt_ratio = case_when(barnacled == "no" ~ 0,
                                TRUE ~ wgt_ratio),
+         scale_wgt_barnacles = scale(wet_wgt_barnacles),
          scale_wgt_ratio = scale(wgt_ratio),
+         #also log and scale the two continuos predictors because there are some
+         #pretty strong outliers
+         #use half of the lowest non-zero value for the constant to be able to 
+         #transform the zeros
+         log_wgt_barnacles = log(wet_wgt_barnacles + 0.015),
+         log_wgt_ratio = log(wgt_ratio + 0.01239669),
+         scale_log_wgt_barnacles = scale(log_wgt_barnacles),
+         scale_log_wgt_ratio = scale(log_wgt_ratio),
          #create a new variables of zeros and ones for speed, where 0 = did not 
          #move and 1 = moved
          distance_logistic = case_when(distance == 0 ~ 0,
@@ -110,6 +119,7 @@ for (i in 1:nrow(snail_recapture)){
                                         recap == "no" ~ 0))
   snail_recap_long <- rbind(snail_recap_long, df)
 }
+
 
 #-------------------------------------------------------------------------------
 #Q1: Is there a relationship between snail abundance per quadrat and ---- 
@@ -463,6 +473,62 @@ ggplot(hurdle34_predict, aes(wet_wgt_barnacles, predicted)) +
 #ggsave("figures/Figure4B_combined.png", device = "png",
 #       height = 120, width = 180, units = "mm", dpi = 600)
 
+#logged version
+hurdle_mod3_log <- glmmTMB(distance_logistic ~ scale_log_wgt_barnacles +
+                            scale_length + (1|pond), 
+                       family = binomial(link = "logit"),
+                       data = snail_movement)
+
+
+hurdle_mod4_log <- glmmTMB(distance ~ scale_log_wgt_barnacles + 
+                             scale_length + (1|pond),
+                       family = Gamma(link = "log"),
+                       data = snail_movement_gamma)
+
+#predict 
+hurdle3_predict_log <- ggpredict(hurdle_mod3_log, 
+                             terms=c("scale_log_wgt_barnacles [-0.96:2.54 by=0.05]")) %>% 
+  mutate(scale_log_wgt_barnacles = x,
+         wet_wgt_barnacles = exp(x*sd(snail_movement$log_wgt_barnacles) +
+           mean(snail_movement$log_wgt_barnacles)-0.015))
+#plot predictions on raw data
+fig4B.1log <- ggplot(hurdle3_predict_log, 
+                  aes(wet_wgt_barnacles, predicted)) + 
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+  geom_line() +
+  geom_point(data = snail_movement, 
+             aes(wet_wgt_barnacles, distance_logistic),
+             size = 0.5, position = position_jitter(height = 0.01)) + 
+  theme_paper() +
+  labs(x = "Wet weight of barnacles (g)",
+       y = "Probability of snail movement",
+       title = "A") +
+  theme(plot.title = element_text(hjust = -0.1, vjust = 2.5, size = 12))
+#predict 
+hurdle4_predict_log <- ggpredict(hurdle_mod4_log, 
+                             terms=c("scale_log_wgt_barnacles [-1.5:1.7 by=0.05]")) %>% 
+  mutate(scale_log_wgt_barnacles = x,
+         wet_wgt_barnacles = exp(x*sd(snail_movement$log_wgt_barnacles) +
+                                   mean(snail_movement$log_wgt_barnacles)-0.015))
+
+#plot predictions on raw data
+fig4B.2log <- ggplot(hurdle4_predict_log, aes(wet_wgt_barnacles, predicted)) + 
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+  geom_line() +
+  geom_point(data = snail_movement_gamma, 
+             aes(wet_wgt_barnacles, distance),
+             size = 0.5) + 
+  theme_paper() +
+  labs(x = "Wet weight of barnacles (g)",
+       y = "Distance moved (cm)",
+       title = "B") +
+  theme(plot.title = element_text(hjust = -0.1, vjust = 2.5, size = 12))
+
+fig4B.1log + fig4B.2log
+
+#ggsave("figures/Figure4B_logged.png", device = "png",
+#       height = 120, width = 180, units = "mm", dpi = 600)
+
 #Q4.3: Does the number of barnacles impact snail speed--------------------------
 hurdle_mod5 <- glmmTMB(distance_logistic ~ scale_wgt_ratio + scale_length + (1|pond), 
                        family = binomial(link = "logit"),
@@ -473,13 +539,13 @@ hurdle_mod6 <- glmmTMB(distance ~ scale_wgt_ratio + scale_length + (1|pond),
                        data = snail_movement_gamma)
 
 #predict 
-hurdle4_predict <- ggpredict(hurdle_mod5, 
+hurdle5_predict <- ggpredict(hurdle_mod5, 
                              terms=c("scale_wgt_ratio [n=100]")) %>% 
   mutate(scale_wgt_ratio = x,
          wgt_ratio = x*sd(snail_movement$wgt_ratio) +
            mean(snail_movement$wgt_ratio))
 #plot predictions on raw data
-fig4C.1 <- ggplot(hurdle4_predict, aes(wgt_ratio, predicted)) + 
+fig4C.1 <- ggplot(hurdle5_predict, aes(wgt_ratio, predicted)) + 
   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
   geom_line() +
   geom_point(data = snail_movement, 
@@ -544,6 +610,59 @@ ggplot(hurdle56_predict, aes(wgt_ratio, predicted)) +
        y = "Distance moved (cm)") 
 
 #ggsave("figures/Figure4C_combined.png", device = "png",
+#       height = 120, width = 180, units = "mm", dpi = 600)
+
+#logged predictor:
+hurdle_mod5_log <- glmmTMB(distance_logistic ~ scale_log_wgt_ratio + 
+                             scale_length + (1|pond), 
+                       family = binomial(link = "logit"),
+                       data = snail_movement)
+
+hurdle_mod6_log <- glmmTMB(distance ~ scale_log_wgt_ratio + 
+                             scale_length + (1|pond),
+                       family = Gamma(link = "log"),
+                       data = snail_movement_gamma)
+
+#predict 
+hurdle5_predict_log <- ggpredict(hurdle_mod5_log, 
+                             terms=c("scale_log_wgt_ratio [n=100]")) %>% 
+  mutate(scale_log_wgt_ratio = x,
+         wgt_ratio = exp(x*sd(snail_movement$log_wgt_ratio) +
+           mean(snail_movement$log_wgt_ratio) - 0.01239669))
+#plot predictions on raw data
+fig4C.1log <- ggplot(hurdle4_predict_log, aes(wgt_ratio, predicted)) + 
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+  geom_line() +
+  geom_point(data = snail_movement, 
+             aes(wgt_ratio, distance_logistic),
+             size = 0.5, position = position_jitter(height = 0.01)) + 
+  theme_paper() +
+  labs(x = "Ratio of barnacle weight to snail weight",
+       y = "Probability of snail movement",
+       title = "A") +
+  theme(plot.title = element_text(hjust = -0.1, vjust = 2.5, size = 12))
+#predict 
+hurdle6_predict_log <- ggpredict(hurdle_mod6_log, 
+                             terms=c("scale_log_wgt_ratio [-1.4:1.65 by=0.02]")) %>% 
+  mutate(scale_log_wgt_ratio = x,
+         wgt_ratio = exp(x*sd(snail_movement$log_wgt_ratio) +
+                           mean(snail_movement$log_wgt_ratio) - 0.01239669))
+#plot predictions on raw data
+fig4C.2log <- ggplot(hurdle6_predict_log, aes(wgt_ratio, predicted)) + 
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+  geom_line() +
+  geom_point(data = snail_movement_gamma, 
+             aes(wgt_ratio, distance),
+             size = 0.5) + 
+  theme_paper() +
+  labs(x = "Ratio of barnacle weight to snail weight",
+       y = "Distance moved (cm)",
+       title = "B") +
+  theme(plot.title = element_text(hjust = -0.1, vjust = 2.5, size = 12))
+
+fig4C.1log + fig4C.2log
+
+#ggsave("figures/Figure4C_logged.png", device = "png",
 #       height = 120, width = 180, units = "mm", dpi = 600)
 
 #Q5: Do barnacles impact snail allometry---------------------------------------

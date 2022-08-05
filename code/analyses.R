@@ -9,7 +9,7 @@ library(rsample) #for generating CIs for the hurdle models
 #load in data-------------------------------------------------------------------
 snail_transects_full <- read_csv("data/Snail_Data_Transects.csv") %>%
   #create a unique quad id
-  unite("quadrat", c(Transect,distance_from_water), remove = FALSE) 
+  unite("quadrat", c(Transect,distance_from_marsh), remove = FALSE) 
 
 snail_quad_level <- snail_transects_full %>%
   #only include one line per quadrat, where the total counts are included 
@@ -53,12 +53,21 @@ snail_movement <- read_csv("data/Snail Data - Behavioural_observations.csv") %>%
   filter(trematodes == "no") %>% 
   mutate(wgt_ratio = wet_wgt_barnacles/wet_wgt_snail,
          scale_length = scale(length),
+         #make sure there are zeros instead of NAs for the no barnacles
          wet_wgt_barnacles = case_when(barnacled == "no" ~ 0,
                                        TRUE ~ wet_wgt_barnacles),
-         scale_wgt_barnacles = scale(wet_wgt_barnacles),
          wgt_ratio = case_when(barnacled == "no" ~ 0,
                                TRUE ~ wgt_ratio),
+         scale_wgt_barnacles = scale(wet_wgt_barnacles),
          scale_wgt_ratio = scale(wgt_ratio),
+         #also log and scale the two continuos predictors because there are some
+         #pretty strong outliers
+         #use half of the lowest non-zero value for the constant to be able to 
+         #transform the zeros
+         log_wgt_barnacles = log(wet_wgt_barnacles + 0.015),
+         log_wgt_ratio = log(wgt_ratio + 0.01239669),
+         scale_log_wgt_barnacles = scale(log_wgt_barnacles),
+         scale_log_wgt_ratio = scale(log_wgt_ratio),
          #create a new variables of zeros and ones for speed, where 0 = did not 
          #move and 1 = moved
          distance_logistic = case_when(distance == 0 ~ 0,
@@ -110,6 +119,41 @@ for (i in 1:nrow(snail_recapture)){
   }
 
 #-------------------------------------------------------------------------------
+#Summary stats------------------------------------------------------------------
+#total quadrats surveyed in population analysis
+quads <- snail_transects_full %>% 
+  distinct(quadrat) %>% 
+  nrow()
+
+#total snails seen across all quads
+total_snails <- snail_quad_level %>% 
+  summarize(n = sum(total_num))
+
+#snails with individual measurements made
+snails_detail <- snail_individuals %>% 
+  nrow()
+
+#number of snails per quadrat
+range(snail_quad_level$total_num)
+mean(snail_quad_level$total_num)
+sd(snail_quad_level$total_num)
+
+#snail sizes
+range(snail_individuals$length)
+mean(snail_individuals$length)
+sd(snail_individuals$length)
+
+#snails with barnacles
+snail_individuals %>% 
+  group_by(barnacled) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = barnacled, values_from = n) %>% 
+  mutate(prop_barnacled = yes/(yes+no))
+
+#proportion of snails recaptured
+
+
 #Q1: Is there a relationship between snail abundance per quadrat and ---- 
 #distance from the water?
 #since we're looking at counts, we'll try a Poisson model first
@@ -234,6 +278,25 @@ hurdle_mod4_check <- simulateResiduals(hurdle_mod4)
 plot(hurdle_mod4_check)
 #looks excellent
 
+#with logged predictor
+hurdle_mod3_log <- glmmTMB(distance_logistic ~ scale_log_wgt_barnacles + 
+                             scale_length + (1|pond), 
+                       family = binomial(link = "logit"),
+                       data = snail_movement)
+summary(hurdle_mod3_log) 
+hurdle_mod3_check_log <- simulateResiduals(hurdle_mod3_log)
+plot(hurdle_mod3_check_log)
+#looks fine
+
+hurdle_mod4_log <- glmmTMB(distance ~ scale_log_wgt_barnacles + 
+                         scale_length + (1|pond),
+                       family = Gamma(link = "log"),
+                       data = snail_movement_gamma)
+summary(hurdle_mod4_log) 
+hurdle_mod4_check_log <- simulateResiduals(hurdle_mod4_log)
+plot(hurdle_mod4_check_log)
+#looks excellent
+
 #Q4.3: Does the number of barnacles impact snail speed--------------------------
 hurdle_mod5 <- glmmTMB(distance_logistic ~ scale_wgt_ratio + scale_length + (1|pond), 
                        family = binomial(link = "logit"),
@@ -249,6 +312,24 @@ hurdle_mod6 <- glmmTMB(distance ~ scale_wgt_ratio + scale_length + (1|pond),
 summary(hurdle_mod6) 
 hurdle_mod6_check <- simulateResiduals(hurdle_mod6)
 plot(hurdle_mod6_check)
+#looks excellent
+
+hurdle_mod5_log <- glmmTMB(distance_logistic ~ scale_log_wgt_ratio + 
+                             scale_length + (1|pond), 
+                       family = binomial(link = "logit"),
+                       data = snail_movement)
+summary(hurdle_mod5_log) 
+hurdle_mod5_check_log <- simulateResiduals(hurdle_mod5_log)
+plot(hurdle_mod5_check_log)
+#looks fine
+
+hurdle_mod6_log <- glmmTMB(distance ~ scale_log_wgt_ratio + 
+                             scale_length + (1|pond),
+                       family = Gamma(link = "log"),
+                       data = snail_movement_gamma)
+summary(hurdle_mod6_log) 
+hurdle_mod6_check_log <- simulateResiduals(hurdle_mod6_log)
+plot(hurdle_mod6_check_log)
 #looks excellent
 
 #Q5: Do barnacles impact snail allometry---------------------------------------
@@ -268,6 +349,7 @@ summary(mod_allometry_nooutlier)
 allometry_nooutlier_check <- simulateResiduals(mod_allometry_nooutlier)
 plot(allometry_nooutlier_check)
 #looks great
+
 #Q6: Do recapture rates vary depending on whether barnacles are present?-----
 mod_recap <- glmmTMB(recap_binary ~ barnacled * date + 
                        (1|pond), 
